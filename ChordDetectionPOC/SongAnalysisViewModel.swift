@@ -336,16 +336,20 @@ final class SongAnalysisViewModel {
         )
     }
 
-    func openShared(_ item: SharedSongItem) async {
-        do {
-            let fetched = try await CloudKitSharingService.fetch(item)
-            applyShared(fetched)
-        } catch {
-            importError = error.localizedDescription
-        }
+    func openShared(_ item: SharedSongItem) async throws {
+        let fetched = try await CloudKitSharingService.fetch(item)
+        applyShared(fetched)
     }
 
     func applyShared(_ fetched: FetchedSharedSong) {
+        let package: SongPackage
+        do {
+            package = try JSONDecoder().decode(SongPackage.self, from: fetched.packageJSON)
+        } catch {
+            importError = error.localizedDescription
+            return
+        }
+
         generation += 1
         lyricsGeneration += 1
         chordsGeneration += 1
@@ -356,19 +360,11 @@ final class SongAnalysisViewModel {
         removeLabFile()
         importError = nil
 
-        let package: SongPackage
-        do {
-            package = try JSONDecoder().decode(SongPackage.self, from: fetched.packageJSON)
-        } catch {
-            importError = error.localizedDescription
-            return
-        }
-
         fileName = fetched.title
         currentFile = fetched.audioURL
         player.load(fetched.audioURL)
-        key = package.key.map { .loaded($0) } ?? .idle
-        chords = package.chords.map { .loaded($0) } ?? .idle
+        key = package.key.map { .loaded($0) } ?? .failed("This share didn't include key data.")
+        chords = package.chords.map { .loaded($0) } ?? .failed("This share didn't include chords.")
         lyrics = package.lyrics.map { .loaded($0) } ?? .idle
         chordKeys = package.chordKeys
         setup = PlayingSetup(transpose: package.transpose, capo: package.capo)

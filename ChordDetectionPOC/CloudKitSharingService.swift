@@ -7,7 +7,13 @@ enum CloudKitConfig {
     static let recordType = "SharedSong"
     static let titleKey = "title"
     static let packageKey = "package"
+    static let packageAssetKey = "packageFile"
     static let audioKey = "audio"
+    static let audioExtKey = "audioExt"
+
+    static let songFieldKeys: [CKRecord.FieldKey] = [
+        titleKey, packageKey, packageAssetKey, audioKey, audioExtKey
+    ]
 }
 
 struct SharedSongItem: Identifiable, Hashable {
@@ -36,6 +42,7 @@ enum CloudKitShareError: LocalizedError {
     case emptyShare
     case saveFailed
     case lookupFailed(String)
+    case unreadableAudio
 
     var errorDescription: String? {
         switch self {
@@ -57,6 +64,8 @@ enum CloudKitShareError: LocalizedError {
             return "Couldn't upload the song to iCloud."
         case .lookupFailed(let account):
             return "Couldn't find an iCloud user for \"\(account)\". Check the email, or send them the share link instead."
+        case .unreadableAudio:
+            return "The shared audio file couldn't be opened for playback."
         }
     }
 }
@@ -87,9 +96,20 @@ enum CloudKitSharingService {
             recordType: CloudKitConfig.recordType,
             recordID: CKRecord.ID(recordName: UUID().uuidString, zoneID: zoneID)
         )
+        let packageFile = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(UUID().uuidString).json")
+        try packageJSON.write(to: packageFile, options: .atomic)
+        defer { try? FileManager.default.removeItem(at: packageFile) }
+
         record[CloudKitConfig.titleKey] = title as CKRecordValue
-        record[CloudKitConfig.packageKey] = packageJSON as CKRecordValue
+        // Bytes for small payloads; asset so a long lyric sheet isn't dropped by the 1 MB field cap.
+        if packageJSON.count < 900_000 {
+            record[CloudKitConfig.packageKey] = packageJSON as CKRecordValue
+        }
+        record[CloudKitConfig.packageAssetKey] = CKAsset(fileURL: packageFile)
         record[CloudKitConfig.audioKey] = CKAsset(fileURL: audioURL)
+        let ext = audioURL.pathExtension.isEmpty ? "m4a" : audioURL.pathExtension
+        record[CloudKitConfig.audioExtKey] = ext as CKRecordValue
 
         let share = CKShare(rootRecord: record)
         share[CKShare.SystemFieldKey.title] = title as CKRecordValue
@@ -117,11 +137,11 @@ enum CloudKitSharingService {
             recordName: item.recordName,
             zoneID: CKRecordZone.ID(zoneName: item.zoneName, ownerName: item.zoneOwnerName)
         )
-        return try unpacked(try await database.record(for: recordID))
+        return try unpacked(try await fetchCompleteRecord(id: recordID, in: database))
     }
 
     static func fetch(recordID: CKRecord.ID, in database: CKDatabase) async throws -> FetchedSharedSong {
-        try unpacked(try await database.record(for: recordID))
+        try unpacked(try await fetchCompleteRecord(id: recordID, in: database))
     }
 
     // MARK: Accept invitation
@@ -271,24 +291,71 @@ enum CloudKitSharingService {
         )
     }
 
+    /// Listing uses `desiredKeys: [title]`, and CloudKit may then return that incomplete
+    /// cached record from `record(for:)`. Fetch the song fields (including assets) explicitly.
+    private static func fetchCompleteRecord(id: CKRecord.ID, in database: CKDatabase) async throws -> CKRecord {
+        let results = try await database.records(for: [id], desiredKeys: CloudKitConfig.songFieldKeys)
+        guard let result = results[id] else { throw CloudKitShareError.emptyShare }
+        switch result {
+        case .success(let record):
+            return record
+        case .failure(let error):
+            throw error
+        }
+    }
+
     private static func unpacked(_ record: CKRecord) throws -> FetchedSharedSong {
         guard record.recordType == CloudKitConfig.recordType else { throw CloudKitShareError.emptyShare }
         let title = record[CloudKitConfig.titleKey] as? String ?? "Song"
-        guard let packageJSON = record[CloudKitConfig.packageKey] as? Data else {
+        guard let packageJSON = packageData(from: record) else {
             throw CloudKitShareError.missingPackage
         }
         guard let asset = record[CloudKitConfig.audioKey] as? CKAsset, let source = asset.fileURL else {
             throw CloudKitShareError.noAudio
         }
 
-        let ext = source.pathExtension.isEmpty ? "m4a" : source.pathExtension
+        let hinted = record[CloudKitConfig.audioExtKey] as? String
+        let ext = audioExtension(forFileAt: source, hinted: hinted)
         let destination = FileManager.default.temporaryDirectory
-            .appendingPathComponent("\(UUID().uuidString)-\(title)")
+            .appendingPathComponent(UUID().uuidString)
             .appendingPathExtension(ext)
         if FileManager.default.fileExists(atPath: destination.path) {
             try FileManager.default.removeItem(at: destination)
         }
         try FileManager.default.copyItem(at: source, to: destination)
+
+        let size = (try? FileManager.default.attributesOfItem(atPath: destination.path)[.size] as? NSNumber)?.intValue ?? 0
+        guard size > 0 else { throw CloudKitShareError.unreadableAudio }
+
         return FetchedSharedSong(title: title, packageJSON: packageJSON, audioURL: destination)
+    }
+
+    private static func packageData(from record: CKRecord) -> Data? {
+        if let data = record[CloudKitConfig.packageKey] as? Data, !data.isEmpty {
+            return data
+        }
+        if let asset = record[CloudKitConfig.packageAssetKey] as? CKAsset, let url = asset.fileURL {
+            return try? Data(contentsOf: url)
+        }
+        if let string = record[CloudKitConfig.packageKey] as? String {
+            return Data(string.utf8)
+        }
+        return nil
+    }
+
+    /// CloudKit asset cache files often have no extension; AVPlayer needs a real one.
+    private static func audioExtension(forFileAt url: URL, hinted: String?) -> String {
+        let hint = hinted?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        if hint.count >= 2, hint.count <= 4, hint.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.contains($0) }) {
+            return hint
+        }
+        if let data = try? Data(contentsOf: url, options: [.mappedIfSafe]), data.count > 12 {
+            if data.starts(with: [0x49, 0x44, 0x33]) { return "mp3" }
+            if data[0] == 0xFF, data[1] & 0xE0 == 0xE0 { return "mp3" }
+            if data.count > 11, data.subdata(in: 4..<8) == Data("ftyp".utf8) { return "m4a" }
+            if data.starts(with: Data("RIFF".utf8)) { return "wav" }
+        }
+        let ext = url.pathExtension.lowercased()
+        return ext.isEmpty ? "m4a" : ext
     }
 }
