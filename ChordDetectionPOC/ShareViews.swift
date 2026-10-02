@@ -85,7 +85,7 @@ struct ShareSongSheet: View {
 // MARK: - Songs you've shared / that were shared with you
 
 struct SharedSongsSheet: View {
-    let onOpen: (SharedSongItem) async -> Void
+    let onOpen: (SharedSongItem) async throws -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var items: [SharedSongItem] = []
@@ -174,7 +174,11 @@ struct SharedSongsSheet: View {
     private func open(_ item: SharedSongItem) async {
         openingID = item.id
         defer { openingID = nil }
-        await onOpen(item)
-        dismiss()
+        do {
+            try await onOpen(item)
+            dismiss()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 }

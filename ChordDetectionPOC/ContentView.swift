@@ -94,7 +94,7 @@ struct ContentView: View {
             }
             .sheet(isPresented: $showSharedList) {
                 SharedSongsSheet { item in
-                    await model.openShared(item)
+                    try await model.openShared(item)
                 }
             }
             .onOpenURL { url in
