@@ -97,9 +97,12 @@ final class SongAnalysisViewModel {
     /// The last detection as a .lab file in the temporary directory, for sharing/scoring.
     private(set) var chordLabFile: URL?
 
+    /// True once an imported (or shared) audio file is on disk and ready to upload.
+    var canShare: Bool { currentFile != nil }
+
     private let chordDetector: any ChordDetecting
     private var analysisTask: Task<Void, Never>?
-    private var chordsTask: Task<Void, Never>?
+    private var chordsTask: Task<Void, Never>?  
     private var lyricsTask: Task<Void, Never>?
     private var currentFile: URL?
 
@@ -316,6 +319,91 @@ final class SongAnalysisViewModel {
         UserDefaults.standard.set(identifier, forKey: Self.lyricsLanguageKey)
         guard let file = currentFile else { return }
         startLyrics(file, gen: generation)
+    }
+
+    // MARK: CloudKit sharing
+
+    func share(with account: String) async throws -> URL {
+        guard let audio = currentFile, let package = makePackage() else {
+            throw CloudKitShareError.noAudio
+        }
+        let json = try JSONEncoder().encode(package)
+        return try await CloudKitSharingService.share(
+            title: package.title,
+            audioURL: audio,
+            packageJSON: json,
+            account: account
+        )
+    }
+
+    func openShared(_ item: SharedSongItem) async {
+        do {
+            let fetched = try await CloudKitSharingService.fetch(item)
+            applyShared(fetched)
+        } catch {
+            importError = error.localizedDescription
+        }
+    }
+
+    func applyShared(_ fetched: FetchedSharedSong) {
+        generation += 1
+        lyricsGeneration += 1
+        chordsGeneration += 1
+        analysisTask?.cancel()
+        chordsTask?.cancel()
+        lyricsTask?.cancel()
+        removeCurrentFile()
+        removeLabFile()
+        importError = nil
+
+        let package: SongPackage
+        do {
+            package = try JSONDecoder().decode(SongPackage.self, from: fetched.packageJSON)
+        } catch {
+            importError = error.localizedDescription
+            return
+        }
+
+        fileName = fetched.title
+        currentFile = fetched.audioURL
+        player.load(fetched.audioURL)
+        key = package.key.map { .loaded($0) } ?? .idle
+        chords = package.chords.map { .loaded($0) } ?? .idle
+        lyrics = package.lyrics.map { .loaded($0) } ?? .idle
+        chordKeys = package.chordKeys
+        setup = PlayingSetup(transpose: package.transpose, capo: package.capo)
+        chordEngine = package.engine
+        lyricsLanguage = package.lyricsLanguage
+        suggestion = nil
+        if let lab = package.labText, !lab.isEmpty {
+            chordLabFile = writeLabFile(lab, engine: chordEngine)
+        }
+        refreshSuggestion()
+    }
+
+    private func makePackage() -> SongPackage? {
+        guard let fileName else { return nil }
+        return SongPackage(
+            title: fileName,
+            engineRaw: chordEngine.rawValue,
+            lyricsLanguage: lyricsLanguage,
+            transpose: setup.transpose,
+            capo: setup.capo,
+            key: {
+                if case .loaded(let value) = key { return value }
+                return nil
+            }(),
+            chords: {
+                if case .loaded(let value) = chords { return value }
+                return nil
+            }(),
+            chordKeys: chordKeys,
+            lyrics: {
+                if case .loaded(let value) = lyrics { return value }
+                return nil
+            }(),
+            labText: chordLabFile.flatMap { try? String(contentsOf: $0, encoding: .utf8) }
+        )
     }
 
     // MARK: File handling

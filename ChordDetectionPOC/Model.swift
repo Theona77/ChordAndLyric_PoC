@@ -10,8 +10,8 @@ enum LoadState<Value> {
 }
 
 // MARK: - Key
-struct KeySegment: Identifiable, Hashable {
-    let id = UUID()
+struct KeySegment: Identifiable, Hashable, Codable {
+    var id = UUID()
     let tonicPitchClass: Int
     let isMinor: Bool
     let start: TimeInterval
@@ -20,7 +20,7 @@ struct KeySegment: Identifiable, Hashable {
     var name: String { NoteNaming.keyName(pitchClass: tonicPitchClass, isMinor: isMinor) }
 }
 
-struct KeySummary {
+struct KeySummary: Codable {
     /// Stored as pitch class + mode only; spelling comes from `NoteNaming.keySpelling`.
     let tonicPitchClass: Int
     let isMinor: Bool
@@ -49,14 +49,14 @@ struct KeySummary {
 
 // MARK: - Lyrics
 
-struct LyricWord: Hashable {
+struct LyricWord: Hashable, Codable {
     let text: String
     let start: TimeInterval
     let end: TimeInterval
 }
 
-struct LyricLine: Identifiable, Hashable {
-    let id = UUID()
+struct LyricLine: Identifiable, Hashable, Codable {
+    var id = UUID()
     let start: TimeInterval
     let end: TimeInterval
     let text: String
@@ -66,7 +66,7 @@ struct LyricLine: Identifiable, Hashable {
 
 // MARK: - Chords
 
-struct ChordEvent: Identifiable, Hashable {
+struct ChordEvent: Identifiable, Hashable, Codable {
     /// Kept when a chord is transposed/respelled, so views don't see a "new" chord every redraw.
     let id: UUID
     let symbol: String          // e.g. "Am7"

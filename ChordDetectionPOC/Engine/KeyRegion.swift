@@ -6,7 +6,7 @@
 import Foundation
 
 /// One stretch of the song in a single key. Starts are sorted; each region lasts until the next.
-nonisolated struct KeyRegion: Sendable, Hashable {
+nonisolated struct KeyRegion: Sendable, Hashable, Codable {
     let start: TimeInterval
     let tonic: Int
     let isMinor: Bool
