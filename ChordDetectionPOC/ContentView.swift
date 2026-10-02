@@ -4,8 +4,11 @@ import UniformTypeIdentifiers
 // MARK: - Main screen
 
 struct ContentView: View {
+    @Environment(CloudKitShareInbox.self) private var inbox
     @State private var model = SongAnalysisViewModel()
     @State private var showImporter = false
+    @State private var showShareSheet = false
+    @State private var showSharedList = false
 
     var body: some View {
         NavigationStack {
@@ -55,6 +58,24 @@ struct ContentView: View {
             }
             .navigationTitle("ChordLab")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        showSharedList = true
+                    } label: {
+                        Label("Shared", systemImage: "person.2")
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    if model.canShare {
+                        Button {
+                            showShareSheet = true
+                        } label: {
+                            Label("Share", systemImage: "square.and.arrow.up")
+                        }
+                    }
+                }
+            }
             .task { await model.loadLanguageOptions() }
             .fileImporter(
                 isPresented: $showImporter,
@@ -65,6 +86,26 @@ struct ContentView: View {
                 case .success(let url): model.load(from: url)
                 case .failure(let error): model.importError = error.localizedDescription
                 }
+            }
+            .sheet(isPresented: $showShareSheet) {
+                ShareSongSheet(songTitle: model.fileName ?? "Song") { account in
+                    try await model.share(with: account)
+                }
+            }
+            .sheet(isPresented: $showSharedList) {
+                SharedSongsSheet { item in
+                    await model.openShared(item)
+                }
+            }
+            .onOpenURL { url in
+                Task { await inbox.acceptShare(at: url) }
+            }
+            .onChange(of: inbox.pendingSong) { _, song in
+                guard song != nil, let fetched = inbox.consumePendingSong() else { return }
+                model.applyShared(fetched)
+            }
+            .onChange(of: inbox.lastError) { _, message in
+                if let message { model.importError = message }
             }
         }
     }
@@ -201,4 +242,5 @@ struct KeyCard: View {
 
 #Preview {
     ContentView()
+        .environment(CloudKitShareInbox.shared)
 }

@@ -12,7 +12,7 @@
 
 import Foundation
 
-struct PlayingSetup: Equatable {
+struct PlayingSetup: Equatable, Codable {
     static let transposeRange = -6...5
     static let capoRange = 0...7
 
